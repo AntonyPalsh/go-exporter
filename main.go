@@ -1,0 +1,251 @@
+// Simple Prometheus exporter in Go supporting TLS for the metrics endpoint
+// and both TLS and plain HTTP when calling upstream endpoints.
+//
+// Features:
+// - Serve /metrics over HTTP or HTTPS (if -tls-cert and -tls-key are provided)
+// - Load endpoints from a YAML config file (see example below)
+// - For each endpoint: optional InsecureSkipVerify, optional client cert/key, optional CA
+// - Periodically poll endpoints and export metrics: endpoint_up and endpoint_response_seconds
+//
+// Usage:
+// 1) Create a config.yaml (example at bottom of file)
+// 2) Build: go build -o exporter
+// 3) Run (HTTP):  ./exporter -config config.yaml -listen ":9090"
+//    Or (HTTPS):   ./exporter -config config.yaml -listen ":9443" -tls-cert server.crt -tls-key server.key
+//
+// Note: this file is intentionally self-contained and small; adapt error handling
+// and features (auth, retries, concurrency limits) as needed for production.
+
+package main
+
+import (
+	"crypto/tls"
+	"crypto/x509"
+	"flag"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+// Config structures
+type Config struct {
+	PollInterval string     `yaml:"poll_interval"`
+	Endpoints    []Endpoint `yaml:"endpoints"`
+}
+
+type Endpoint struct {
+	Name               string `yaml:"name"`
+	URL                string `yaml:"url"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
+	ClientCert         string `yaml:"client_cert"`
+	ClientKey          string `yaml:"client_key"`
+	CA                 string `yaml:"ca"`
+	TimeoutSeconds     int    `yaml:"timeout_seconds"`
+}
+
+var (
+	endpointUp = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "exporter_endpoint_up",
+			Help: "Whether the endpoint is up (1) or down (0)",
+		},
+		[]string{"endpoint", "url"},
+	)
+
+	endpointRespSeconds = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "exporter_endpoint_response_seconds",
+			Help: "Last response time in seconds for the endpoint",
+		},
+		[]string{"endpoint", "url"},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(endpointUp)
+	prometheus.MustRegister(endpointRespSeconds)
+}
+
+func loadConfig(path string) (*Config, error) {
+	b, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// buildHTTPClient creates an http.Client configured for the endpoint (TLS options, client cert, CA)
+func buildHTTPClient(e Endpoint) (*http.Client, error) {
+	tlsConfig := &tls.Config{}
+	// CA
+	if e.CA != "" {
+		caBytes, err := ioutil.ReadFile(e.CA)
+		if err != nil {
+			return nil, fmt.Errorf("reading CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caBytes) {
+			return nil, fmt.Errorf("failed to append CA certs from %s", e.CA)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	// Client cert (optional)
+	if e.ClientCert != "" && e.ClientKey != "" {
+		cert, err := tls.LoadX509KeyPair(e.ClientCert, e.ClientKey)
+		if err != nil {
+			return nil, fmt.Errorf("loading client cert/key: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	if e.InsecureSkipVerify {
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	client := &http.Client{Transport: transport}
+	if e.TimeoutSeconds > 0 {
+		client.Timeout = time.Duration(e.TimeoutSeconds) * time.Second
+	} else {
+		client.Timeout = 10 * time.Second
+	}
+	return client, nil
+}
+
+func pollEndpoint(e Endpoint, client *http.Client, wg *sync.WaitGroup) {
+	defer wg.Done()
+	start := time.Now()
+	resp, err := client.Get(e.URL)
+	elapsed := time.Since(start).Seconds()
+	labels := prometheus.Labels{"endpoint": e.Name, "url": e.URL}
+	if err != nil {
+		log.Printf("error fetching %s (%s): %v", e.Name, e.URL, err)
+		endpointUp.With(labels).Set(0)
+		endpointRespSeconds.With(labels).Set(elapsed)
+		return
+	}
+	defer resp.Body.Close()
+	// Drain body (avoid leaks)
+	_, _ = io.Copy(ioutil.Discard, resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		endpointUp.With(labels).Set(1)
+	} else {
+		endpointUp.With(labels).Set(0)
+	}
+	endpointRespSeconds.With(labels).Set(elapsed)
+}
+
+func startPolling(cfg *Config) {
+	interval := 15 * time.Second
+	if cfg.PollInterval != "" {
+		d, err := time.ParseDuration(cfg.PollInterval)
+		if err == nil {
+			interval = d
+		} else {
+			log.Printf("invalid poll_interval %q, using default %s", cfg.PollInterval, interval)
+		}
+	}
+
+	// Pre-create clients for endpoints
+	clients := make([]*http.Client, len(cfg.Endpoints))
+	for i, e := range cfg.Endpoints {
+		c, err := buildHTTPClient(e)
+		if err != nil {
+			log.Fatalf("failed to build http client for endpoint %s: %v", e.Name, err)
+		}
+		clients[i] = c
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		// immediate first round
+		for i := range cfg.Endpoints {
+			wg := &sync.WaitGroup{}
+			wg.Add(1)
+			go pollEndpoint(cfg.Endpoints[i], clients[i], wg)
+			wg.Wait()
+		}
+		for range ticker.C {
+			var wg sync.WaitGroup
+			for i := range cfg.Endpoints {
+				wg.Add(1)
+				go pollEndpoint(cfg.Endpoints[i], clients[i], &wg)
+			}
+			wg.Wait()
+		}
+	}()
+}
+
+func main() {
+	var (
+		configPath = flag.String("config", "config.yaml", "Path to config YAML")
+		listenAddr = flag.String("listen", ":9090", "Address to listen on for Prometheus (e.g. :9090)")
+		tlsCert    = flag.String("tls-cert", "", "TLS certificate file for /metrics (optional)")
+		tlsKey     = flag.String("tls-key", "", "TLS key file for /metrics (optional)")
+	)
+	flag.Parse()
+
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	startPolling(cfg)
+
+	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Exporter: /metrics\n"))
+	})
+
+	log.Printf("starting exporter on %s (tls: %v)", *listenAddr, *tlsCert != "" && *tlsKey != "")
+	if *tlsCert != "" && *tlsKey != "" {
+		if err := http.ListenAndServeTLS(*listenAddr, *tlsCert, *tlsKey, nil); err != nil {
+			log.Fatalf("failed to start https server: %v", err)
+		}
+	} else {
+		if err := http.ListenAndServe(*listenAddr, nil); err != nil {
+			log.Fatalf("failed to start http server: %v", err)
+		}
+	}
+}
+
+/* Example config.yaml
+
+poll_interval: "10s"
+endpoints:
+  - name: "example-http"
+    url: "http://example.com/health"
+    insecure_skip_verify: false
+    timeout_seconds: 5
+
+  - name: "example-https-insecure"
+    url: "https://self-signed.example.local/health"
+    insecure_skip_verify: true
+    timeout_seconds: 10
+
+  - name: "example-https-mtls"
+    url: "https://mtls.example.local/health"
+    insecure_skip_verify: false
+    client_cert: "/etc/exporter/client.crt"
+    client_key: "/etc/exporter/client.key"
+    ca: "/etc/exporter/ca.crt"
+    timeout_seconds: 10
+
+*/
