@@ -1,21 +1,3 @@
-// Simple Prometheus exporter in Go supporting TLS for the metrics endpoint
-// and both TLS and plain HTTP when calling upstream endpoints.
-//
-// Features:
-// - Serve /metrics over HTTP or HTTPS (if -tls-cert and -tls-key are provided)
-// - Load endpoints from a YAML config file (see example below)
-// - For each endpoint: optional InsecureSkipVerify, optional client cert/key, optional CA
-// - Periodically poll endpoints and export metrics: endpoint_up and endpoint_response_seconds
-//
-// Usage:
-// 1) Create a config.yaml (example at bottom of file)
-// 2) Build: go build -o exporter
-// 3) Run (HTTP):  ./exporter -config config.yaml -listen ":9090"
-//    Or (HTTPS):   ./exporter -config config.yaml -listen ":9443" -tls-cert server.crt -tls-key server.key
-//
-// Note: this file is intentionally self-contained and small; adapt error handling
-// and features (auth, retries, concurrency limits) as needed for production.
-
 package main
 
 import (
@@ -224,27 +206,3 @@ func main() {
 		}
 	}
 }
-
-/* Example config.yaml
-
-poll_interval: "10s"
-endpoints:
-  - name: "example-http"
-    url: "http://example.com/health"
-    insecure_skip_verify: false
-    timeout_seconds: 5
-
-  - name: "example-https-insecure"
-    url: "https://self-signed.example.local/health"
-    insecure_skip_verify: true
-    timeout_seconds: 10
-
-  - name: "example-https-mtls"
-    url: "https://mtls.example.local/health"
-    insecure_skip_verify: false
-    client_cert: "/etc/exporter/client.crt"
-    client_key: "/etc/exporter/client.key"
-    ca: "/etc/exporter/ca.crt"
-    timeout_seconds: 10
-
-*/
