@@ -179,10 +179,10 @@ func startPolling(cfg *Config) {
 
 func main() {
 	var (
-		configPath = flag.String("-config", "config.yaml", "Path to config YAML")
-		listenAddr = flag.String("-listen", "9090", "Address to listen on for Prometheus (e.g. 9090)")
-		tlsCert    = flag.String("-tls-cert", "", "TLS certificate file for /metrics (optional)")
-		tlsKey     = flag.String("-tls-key", "", "TLS key file for /metrics (optional)")
+		configPath = flag.String("config", "config.yaml", "Path to config YAML")
+		listenAddr = flag.String("listen", ":9090", "Address to listen on for Prometheus (e.g. 0.0.0.0:9090)")
+		tlsCert    = flag.String("cert", "", "TLS certificate file for /metrics (optional)")
+		tlsKey     = flag.String("key", "", "TLS key file for /metrics (optional)")
 	)
 	flag.Parse()
 
