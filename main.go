@@ -6,9 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -58,71 +58,74 @@ func init() {
 }
 
 func loadConfig(path string) (*Config, error) {
-	b, err := ioutil.ReadFile(path)
+	// byteFile, err := ioutil.ReadFile(path)
+	byteFile, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
+	var config Config
+	if err := yaml.Unmarshal(byteFile, &config); err != nil {
 		return nil, err
 	}
-	return &c, nil
+	return &config, nil
 }
 
 // buildHTTPClient creates an http.Client configured for the endpoint (TLS options, client cert, CA)
-func buildHTTPClient(e Endpoint) (*http.Client, error) {
+func buildHTTPClient(endpoint Endpoint) (*http.Client, error) {
 	tlsConfig := &tls.Config{}
 	// CA
-	if e.CA != "" {
-		caBytes, err := ioutil.ReadFile(e.CA)
+	if endpoint.CA != "" {
+		// caBytes, err := ioutil.ReadFile(e.CA)
+		caBytes, err := os.ReadFile(endpoint.CA)
 		if err != nil {
 			return nil, fmt.Errorf("reading CA file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caBytes) {
-			return nil, fmt.Errorf("failed to append CA certs from %s", e.CA)
+			return nil, fmt.Errorf("failed to append CA certs from %s", endpoint.CA)
 		}
 		tlsConfig.RootCAs = pool
 	}
 
 	// Client cert (optional)
-	if e.ClientCert != "" && e.ClientKey != "" {
-		cert, err := tls.LoadX509KeyPair(e.ClientCert, e.ClientKey)
+	if endpoint.ClientCert != "" && endpoint.ClientKey != "" {
+		cert, err := tls.LoadX509KeyPair(endpoint.ClientCert, endpoint.ClientKey)
 		if err != nil {
 			return nil, fmt.Errorf("loading client cert/key: %w", err)
 		}
 		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
-	if e.InsecureSkipVerify {
+	if endpoint.InsecureSkipVerify {
 		tlsConfig.InsecureSkipVerify = true
 	}
 
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	client := &http.Client{Transport: transport}
-	if e.TimeoutSeconds > 0 {
-		client.Timeout = time.Duration(e.TimeoutSeconds) * time.Second
+	if endpoint.TimeoutSeconds > 0 {
+		client.Timeout = time.Duration(endpoint.TimeoutSeconds) * time.Second
 	} else {
 		client.Timeout = 10 * time.Second
 	}
 	return client, nil
 }
 
-func pollEndpoint(e Endpoint, client *http.Client, wg *sync.WaitGroup) {
+func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 	defer wg.Done()
 	start := time.Now()
-	resp, err := client.Get(e.URL)
+	resp, err := client.Get(endpoint.URL)
 	elapsed := time.Since(start).Seconds()
-	labels := prometheus.Labels{"endpoint": e.Name, "url": e.URL}
+	labels := prometheus.Labels{"endpoint": endpoint.Name, "url": endpoint.URL}
 	if err != nil {
-		log.Printf("error fetching %s (%s): %v", e.Name, e.URL, err)
+		log.Printf("error fetching %s (%s): %v", endpoint.Name, endpoint.URL, err)
 		endpointUp.With(labels).Set(0)
 		endpointRespSeconds.With(labels).Set(elapsed)
 		return
 	}
 	defer resp.Body.Close()
 	// Drain body (avoid leaks)
-	_, _ = io.Copy(ioutil.Discard, resp.Body)
+	// _, _ = io.Copy(ioutil.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		endpointUp.With(labels).Set(1)
@@ -145,12 +148,12 @@ func startPolling(cfg *Config) {
 
 	// Pre-create clients for endpoints
 	clients := make([]*http.Client, len(cfg.Endpoints))
-	for i, e := range cfg.Endpoints {
-		c, err := buildHTTPClient(e)
+	for i, endpoint := range cfg.Endpoints {
+		config, err := buildHTTPClient(endpoint)
 		if err != nil {
-			log.Fatalf("failed to build http client for endpoint %s: %v", e.Name, err)
+			log.Fatalf("failed to build http client for endpoint %s: %v", endpoint.Name, err)
 		}
-		clients[i] = c
+		clients[i] = config
 	}
 
 	go func() {
