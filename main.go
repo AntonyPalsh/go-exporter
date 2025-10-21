@@ -50,11 +50,20 @@ var (
 		},
 		[]string{"endpoint", "url"},
 	)
+
+	endpointRespCode = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "exporter_endpoint_response_code",
+			Help: "Response code HTTP for the endpoint",
+		},
+		[]string{"endpoint", "url"},
+	)
 )
 
 func init() {
 	prometheus.MustRegister(endpointUp)
 	prometheus.MustRegister(endpointRespSeconds)
+	prometheus.MustRegister(endpointRespCode)
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -120,6 +129,7 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 		log.Printf("error fetching %s (%s): %v", endpoint.Name, endpoint.URL, err)
 		endpointUp.With(labels).Set(0)
 		endpointRespSeconds.With(labels).Set(elapsed)
+		endpointRespCode.With(labels).Set(float64(resp.StatusCode))
 		return
 	}
 	defer resp.Body.Close()
@@ -133,6 +143,7 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 		endpointUp.With(labels).Set(0)
 	}
 	endpointRespSeconds.With(labels).Set(elapsed)
+	endpointRespCode.With(labels).Set(float64(resp.StatusCode))
 }
 
 func startPolling(cfg *Config) {
