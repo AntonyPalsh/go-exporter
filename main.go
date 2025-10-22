@@ -22,16 +22,16 @@ import (
 type Config struct {
 	PollInterval string     `yaml:"poll_interval"`
 	Endpoints    []Endpoint `yaml:"endpoints"`
-	ClientCert   string `yaml:"client_cert"`
-	ClientKey    string `yaml:"client_key"`
-	CA           string `yaml:"ca"`
+	ClientCert   string     `yaml:"client_cert"`
+	ClientKey    string     `yaml:"client_key"`
+	CA           string     `yaml:"ca"`
 }
 
 type Endpoint struct {
 	Name               string `yaml:"name"`
 	URL                string `yaml:"url"`
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
-	TlsEnable		   bool   `yaml:"TLS_enable"`
+	TlsEnable          bool   `yaml:"TLS_enable"`
 	TimeoutSeconds     int    `yaml:"timeout_seconds"`
 }
 
@@ -81,7 +81,7 @@ func loadConfig(path string) (*Config, error) {
 }
 
 // buildHTTPClient creates an http.Client configured for the endpoint (TLS options, client cert, CA)
-func buildHTTPClient(endpoint Endpoint) (*http.Client, error) {
+func buildHTTPClient(endpoint Endpoint, config Config) (*http.Client, error) {
 	tlsConfig := &tls.Config{}
 	// CA
 	if config.CA != "" {
@@ -97,7 +97,7 @@ func buildHTTPClient(endpoint Endpoint) (*http.Client, error) {
 		tlsConfig.RootCAs = pool
 	}
 
-	if endpoint.TLS_enable {
+	if endpoint.TlsEnable {
 		cert, err := tls.LoadX509KeyPair(config.ClientCert, config.ClientKey)
 		if err != nil {
 			return nil, fmt.Errorf("loading client cert/key: %w", err)
@@ -160,7 +160,7 @@ func startPolling(cfg *Config) {
 	// Pre-create clients for endpoints
 	clients := make([]*http.Client, len(cfg.Endpoints))
 	for i, endpoint := range cfg.Endpoints {
-		config, err := buildHTTPClient(endpoint)
+		config, err := buildHTTPClient(endpoint, *cfg)
 		if err != nil {
 			log.Fatalf("failed to build http client for endpoint %s: %v", endpoint.Name, err)
 		}

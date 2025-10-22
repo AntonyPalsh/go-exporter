@@ -1,19 +1,23 @@
 poll_interval: "10s"
+client_cert: "client.crt"
+client_key: "client.key"
+ca: ""
+
 endpoints:
   - name: "example-http"
     url: "http://127.0.0.1:631"
+    TLS_enable: false
     insecure_skip_verify: false
     timeout_seconds: 5
 
   # - name: "example-https-insecure"
   #   url: "http://self-signed.example.local/health"
+  #   TLS_enable: false
   #   insecure_skip_verify: false
   #   timeout_seconds: 10
 
   # - name: "example-https-mtls"
   #   url: "http://mtls.example.local/health"
+  #   TLS_enable: true
   #   insecure_skip_verify: false
-  #   client_cert: "/etc/exporter/client.crt"
-  #   client_key: "/etc/exporter/client.key"
-  #   ca: "/etc/exporter/ca.crt"
   #   timeout_seconds: 10
