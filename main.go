@@ -22,15 +22,16 @@ import (
 type Config struct {
 	PollInterval string     `yaml:"poll_interval"`
 	Endpoints    []Endpoint `yaml:"endpoints"`
+	ClientCert   string `yaml:"client_cert"`
+	ClientKey    string `yaml:"client_key"`
+	CA           string `yaml:"ca"`
 }
 
 type Endpoint struct {
 	Name               string `yaml:"name"`
 	URL                string `yaml:"url"`
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
-	ClientCert         string `yaml:"client_cert"`
-	ClientKey          string `yaml:"client_key"`
-	CA                 string `yaml:"ca"`
+	TlsEnable		   bool   `yaml:"TLS_enable"`
 	TimeoutSeconds     int    `yaml:"timeout_seconds"`
 }
 
@@ -83,22 +84,21 @@ func loadConfig(path string) (*Config, error) {
 func buildHTTPClient(endpoint Endpoint) (*http.Client, error) {
 	tlsConfig := &tls.Config{}
 	// CA
-	if endpoint.CA != "" {
+	if config.CA != "" {
 		// caBytes, err := ioutil.ReadFile(e.CA)
-		caBytes, err := os.ReadFile(endpoint.CA)
+		caBytes, err := os.ReadFile(config.CA)
 		if err != nil {
 			return nil, fmt.Errorf("reading CA file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caBytes) {
-			return nil, fmt.Errorf("failed to append CA certs from %s", endpoint.CA)
+			return nil, fmt.Errorf("failed to append CA certs from %s", config.CA)
 		}
 		tlsConfig.RootCAs = pool
 	}
 
-	// Client cert (optional)
-	if endpoint.ClientCert != "" && endpoint.ClientKey != "" {
-		cert, err := tls.LoadX509KeyPair(endpoint.ClientCert, endpoint.ClientKey)
+	if endpoint.TLS_enable {
+		cert, err := tls.LoadX509KeyPair(config.ClientCert, config.ClientKey)
 		if err != nil {
 			return nil, fmt.Errorf("loading client cert/key: %w", err)
 		}
