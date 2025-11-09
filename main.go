@@ -18,6 +18,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+var version string = "1.0.1"
+
 // Config structures
 type Config struct {
 	PollInterval string     `yaml:"poll_interval"`
@@ -195,6 +197,12 @@ func main() {
 		tlsCert    = flag.String("cert", "", "TLS certificate file for /metrics (optional)")
 		tlsKey     = flag.String("key", "", "TLS key file for /metrics (optional)")
 	)
+
+	// Show version
+	flag.Func("version", version, func(s string) error {
+		return nil
+	})
+
 	flag.Parse()
 
 	cfg, err := loadConfig(*configPath)
