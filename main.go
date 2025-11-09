@@ -129,7 +129,7 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 		log.Printf("error fetching %s (%s): %v", endpoint.Name, endpoint.URL, err)
 		endpointUp.With(labels).Set(0)
 		endpointRespSeconds.With(labels).Set(elapsed)
-		endpointRespCode.With(labels).Set(float64(resp.StatusCode))
+		endpointRespCode.With(labels).Set(0)
 		return
 	}
 	defer resp.Body.Close()

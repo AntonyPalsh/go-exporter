@@ -5,7 +5,7 @@ ca: ""
 
 endpoints:
   - name: "example-http"
-    url: "http://127.0.0.1:631"
+    url: "http://127.0.0.1:80"
     TLS_enable: false
     insecure_skip_verify: false
     timeout_seconds: 5
