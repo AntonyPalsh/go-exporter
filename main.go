@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -14,42 +15,43 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/expfmt"
 	"gopkg.in/yaml.v3"
 )
 
-// version - переменная для хранения версии приложения
-var version string = "1.0.1"
+// version - variable to store the application version
+var version string = "1.1.0"
 
 // ============================================
-// СТРУКТУРЫ ДАННЫХ
+// DATA STRUCTURES
 // ============================================
 
-// Config - структура для хранения конфигурации приложения
-// Содержит интервал опроса, список эндпоинтов и параметры TLS
+// Config - structure for storing application configuration
+// Contains poll interval, list of endpoints, and TLS parameters
 type Config struct {
-	PollInterval string     `yaml:"poll_interval"` // Интервал между опросами в формате time.Duration (e.g. "10s", "1m")
-	Endpoints    []Endpoint `yaml:"endpoints"`     // Список эндпоинтов для мониторинга
-	ClientCert   string     `yaml:"client_cert"`   // Путь к сертификату клиента для mTLS
-	ClientKey    string     `yaml:"client_key"`    // Путь к приватному ключу клиента для mTLS
-	CA           string     `yaml:"ca"`            // Путь к файлу CA сертификата для проверки сервера
+	PollInterval string     `yaml:"poll_interval"` // Poll interval in time.Duration format (e.g. "10s", "1m")
+	Endpoints    []Endpoint `yaml:"endpoints"`     // List of endpoints to monitor
+	ClientCert   string     `yaml:"client_cert"`   // Path to client certificate for mTLS
+	ClientKey    string     `yaml:"client_key"`    // Path to client private key for mTLS
+	CA           string     `yaml:"ca"`            // Path to CA certificate file for server verification
 }
 
-// Endpoint - структура для описания одного эндпоинта, который необходимо мониторить
+// Endpoint - structure for describing a single endpoint to monitor
 type Endpoint struct {
-	Name               string `yaml:"name"`                 // Человеческое имя эндпоинта для логов и метрик
-	URL                string `yaml:"url"`                  // Полный URL эндпоинта (e.g. https://example.com/health)
-	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // Флаг для пропуска проверки SSL сертификата (небезопасно)
-	TlsEnable          bool   `yaml:"TLS_enable"`           // Флаг для включения/отключения TLS
-	TimeoutSeconds     int    `yaml:"timeout_seconds"`      // Timeout для HTTP запроса в секундах
+	Name               string `yaml:"name"`                 // Human-readable endpoint name for logs and metrics
+	URL                string `yaml:"url"`                  // Full URL of the endpoint (e.g. https://example.com/health)
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // Flag to skip SSL certificate verification (insecure)
+	TlsEnable          bool   `yaml:"TLS_enable"`           // Flag to enable/disable TLS
+	TimeoutSeconds     int    `yaml:"timeout_seconds"`      // HTTP request timeout in seconds
 }
 
 // ============================================
-// PROMETHEUS МЕТРИКИ
+// PROMETHEUS METRICS
 // ============================================
 
-// endpointUp - метрика Prometheus (Gauge) для отслеживания статуса эндпоинта
-// Значение 1 = эндпоинт работает, 0 = эндпоинт не доступен
-// Метки: "endpoint" (имя) и "url" (адрес)
+// endpointUp - Prometheus metric (Gauge) for tracking endpoint status
+// Value 1 = endpoint is up, 0 = endpoint is down
+// Labels: "endpoint" (name) and "url" (address)
 var endpointUp = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "exporter_endpoint_up",
@@ -58,9 +60,9 @@ var endpointUp = prometheus.NewGaugeVec(
 	[]string{"endpoint", "url"},
 )
 
-// endpointRespSeconds - метрика Prometheus (Gauge) для отслеживания времени ответа эндпоинта
-// Хранит время ответа в секундах (float64)
-// Метки: "endpoint" (имя) и "url" (адрес)
+// endpointRespSeconds - Prometheus metric (Gauge) for tracking endpoint response time
+// Stores response time in seconds (float64)
+// Labels: "endpoint" (name) and "url" (address)
 var endpointRespSeconds = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "exporter_endpoint_response_seconds",
@@ -69,266 +71,303 @@ var endpointRespSeconds = prometheus.NewGaugeVec(
 	[]string{"endpoint", "url"},
 )
 
-// endpointRespCode - метрика Prometheus (Gauge) для отслеживания HTTP кода ответа эндпоинта
-// Хранит последний полученный HTTP статус код (200, 404, 500 и т.д.)
-// Метки: "endpoint" (имя) и "url" (адрес)
+// endpointRespCode - Prometheus metric (Gauge) for tracking HTTP response code of endpoint
+// Stores the last received HTTP status code (200, 404, 500, etc.)
+// Labels: "endpoint" (name) and "url" (address)
 var endpointRespCode = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "exporter_endpoint_response_code",
-		Help: "Response code HTTP for the endpoint",
+		Help: "HTTP response code for the endpoint",
 	},
 	[]string{"endpoint", "url"},
 )
 
 // ============================================
-// ИНИЦИАЛИЗАЦИЯ
+// INITIALIZATION
 // ============================================
 
-// init - функция инициализации, вызывается автоматически перед main()
-// Регистрирует все Prometheus метрики в глобальном реестре
+// init - initialization function, called automatically before main()
+// Registers all Prometheus metrics in the global registry
 func init() {
-	prometheus.MustRegister(endpointUp)          // Регистрируем метрику статуса эндпоинта
-	prometheus.MustRegister(endpointRespSeconds) // Регистрируем метрику времени ответа
-	prometheus.MustRegister(endpointRespCode)    // Регистрируем метрику HTTP кода ответа
+	prometheus.MustRegister(endpointUp)          // Register endpoint status metric
+	prometheus.MustRegister(endpointRespSeconds) // Register response time metric
+	prometheus.MustRegister(endpointRespCode)    // Register HTTP response code metric
 }
 
 // ============================================
-// ФУНКЦИИ
+// FUNCTIONS
 // ============================================
 
-// loadConfig - загружает конфигурацию приложения из YAML файла
-// Параметры:
-//   - path: строка с путем до файла конфигурации
+// writeMetricsToTextfile serializes all metrics from the registry to Prometheus text format
+// and atomically writes them to the specified file (for node_exporter textfile collector)
+func writeMetricsToTextfile(path string) error {
+	if path == "" {
+		return nil
+	}
+
+	// Gather all metrics from the default registry
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		return fmt.Errorf("gather metrics: %w", err)
+	}
+
+	var buf bytes.Buffer
+	enc := expfmt.NewEncoder(&buf, expfmt.FmtText)
+
+	// Encode each metric to text format
+	for _, mf := range mfs {
+		if err := enc.Encode(mf); err != nil {
+			return fmt.Errorf("encode metric: %w", err)
+		}
+	}
+
+	// Atomic write: first to temporary file, then rename
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("write tmp file: %w", err)
+	}
+
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename tmp file: %w", err)
+	}
+
+	return nil
+}
+
+// loadConfig - loads application configuration from YAML file
+// Parameters:
+// - path: string with path to config file
 //
-// Возвращает:
-//   - указатель на структуру Config
-//   - ошибку (если что-то пошло не так при чтении или парсинге)
+// Returns:
+// - pointer to Config structure
+// - error (if something went wrong during reading or parsing)
 func loadConfig(path string) (*Config, error) {
-	// Читаем содержимое файла в байты
+	// Read file contents into bytes
 	byteFile, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err // Возвращаем ошибку, если не можем прочитать файл
+		return nil, err // Return error if we can't read the file
 	}
 
-	// Создаем пустую структуру Config
+	// Create empty Config structure
 	var config Config
 
-	// Парсим YAML из прочитанных байтов в структуру Config
+	// Parse YAML from read bytes into Config structure
 	if err := yaml.Unmarshal(byteFile, &config); err != nil {
-		return nil, err // Возвращаем ошибку, если парсинг YAML не удался
+		return nil, err // Return error if YAML parsing failed
 	}
 
-	// Возвращаем успешно загруженную конфигурацию
+	// Return successfully loaded configuration
 	return &config, nil
 }
 
-// buildHTTPClient - создает и конфигурирует HTTP клиент для работы с конкретным эндпоинтом
-// Параметры:
-//   - endpoint: структура Endpoint с параметрами конкретного эндпоинта
-//   - config: структура Config с глобальными параметрами (пути к сертификатам и ключам)
+// buildHTTPClient - creates and configures HTTP client for specific endpoint
+// Parameters:
+// - endpoint: Endpoint structure with specific endpoint parameters
+// - config: Config structure with global parameters (certificate and key paths)
 //
-// Возвращает:
-//   - указатель на http.Client, готовый к использованию
-//   - ошибку (если не удалось загрузить сертификаты или ключи)
+// Returns:
+// - pointer to ready-to-use http.Client
+// - error (if failed to load certificates or keys)
 func buildHTTPClient(endpoint Endpoint, config Config) (*http.Client, error) {
-	// Создаем новую TLS конфигурацию (изначально пустую)
+	// Create new TLS configuration (initially empty)
 	tlsConfig := &tls.Config{}
 
-	// ===== Настройка CA сертификата для проверки сервера =====
+	// ===== CA certificate setup for server verification =====
 	if config.CA != "" {
-		// Читаем CA сертификат из файла
+		// Read CA certificate from file
 		caBytes, err := os.ReadFile(config.CA)
 		if err != nil {
 			return nil, fmt.Errorf("reading CA file: %w", err)
 		}
 
-		// Создаем новый пул сертификатов
+		// Create new certificate pool
 		pool := x509.NewCertPool()
-
-		// Добавляем CA сертификат в пул
+		// Add CA certificate to pool
 		if !pool.AppendCertsFromPEM(caBytes) {
 			return nil, fmt.Errorf("failed to append CA certs from %s", config.CA)
 		}
 
-		// Устанавливаем пул как корневой для проверки серверного сертификата
+		// Set pool as root for server certificate verification
 		tlsConfig.RootCAs = pool
 	}
 
-	// ===== Настройка клиентского сертификата (mTLS) =====
+	// ===== Client certificate setup (mTLS) =====
 	if endpoint.TlsEnable {
-		// Загружаем пару сертификат+ключ клиента
+		// Load client certificate+key pair
 		cert, err := tls.LoadX509KeyPair(config.ClientCert, config.ClientKey)
 		if err != nil {
 			return nil, fmt.Errorf("loading client cert/key: %w", err)
 		}
 
-		// Добавляем клиентский сертификат в TLS конфигурацию
+		// Add client certificate to TLS configuration
 		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
-	// ===== Настройка опции пропуска проверки SSL =====
+	// ===== SSL verification skip option setup =====
 	if endpoint.InsecureSkipVerify {
-		// ВНИМАНИЕ: Небезопасная опция! Отключает проверку SSL сертификата сервера
+		// WARNING: Insecure option! Disables server SSL certificate verification
 		tlsConfig.InsecureSkipVerify = true
 	}
 
-	// ===== Создание HTTP клиента =====
-	// Создаем транспорт с нашей TLS конфигурацией
+	// ===== HTTP client creation =====
+	// Create transport with our TLS configuration
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
-
-	// Создаем HTTP клиент с этим транспортом
+	// Create HTTP client with this transport
 	client := &http.Client{Transport: transport}
 
-	// ===== Настройка timeout =====
+	// ===== Timeout setup =====
 	if endpoint.TimeoutSeconds > 0 {
-		// Если timeout задан в конфигурации, используем его
+		// If timeout specified in config, use it
 		client.Timeout = time.Duration(endpoint.TimeoutSeconds) * time.Second
 	} else {
-		// Иначе используем timeout по умолчанию - 10 секунд
+		// Otherwise use default timeout - 10 seconds
 		client.Timeout = 10 * time.Second
 	}
 
 	return client, nil
 }
 
-// pollEndpoint - опрашивает один эндпоинт и обновляет метрики
-// Параметры:
-//   - endpoint: структура Endpoint для опроса
-//   - client: HTTP клиент для выполнения запроса
-//   - wg: WaitGroup для синхронизации горутин
+// pollEndpoint - polls a single endpoint and updates metrics
+// Parameters:
+// - endpoint: Endpoint structure to poll
+// - client: HTTP client for making the request
+// - wg: WaitGroup for goroutine synchronization
 func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
-	// Автоматически отметить WaitGroup как завершенный при выходе из функции
+	// Automatically mark WaitGroup as done when exiting the function
 	defer wg.Done()
 
-	// Запоминаем время начала опроса
+	// Record poll start time
 	start := time.Now()
 
-	// Выполняем GET запрос к эндпоинту
+	// Make GET request to endpoint
 	resp, err := client.Get(endpoint.URL)
 
-	// Вычисляем время ответа в секундах
+	// Calculate response time in seconds
 	elapsed := time.Since(start).Seconds()
 
-	// Создаем метки для этого эндпоинта (используются для всех метрик)
+	// Create labels for this endpoint (used for all metrics)
 	labels := prometheus.Labels{"endpoint": endpoint.Name, "url": endpoint.URL}
 
-	// ===== Обработка ошибок при запросе =====
+	// ===== Error handling =====
 	if err != nil {
-		// Логируем ошибку
+		// Log error
 		log.Printf("error fetching %s (%s): %v", endpoint.Name, endpoint.URL, err)
-
-		// Устанавливаем метрику: эндпоинт недоступен (0)
+		// Set metric: endpoint is down (0)
 		endpointUp.With(labels).Set(0)
-
-		// Записываем время, за которое произошла ошибка
+		// Record time taken for error
 		endpointRespSeconds.With(labels).Set(elapsed)
-
-		// Устанавливаем код ответа в 0 (нет ответа)
+		// Set response code to 0 (no response)
 		endpointRespCode.With(labels).Set(0)
-
-		return // Выходим из функции
+		return // Exit function
 	}
 
-	// ===== Обработка успешного ответа =====
-	// Закрываем тело ответа после завершения функции
+	// ===== Successful response handling =====
+	// Close response body when function exits
 	defer resp.Body.Close()
 
-	// Читаем и выбрасываем тело ответа, чтобы избежать утечек памяти
-	// это важно для переиспользования соединения в http.Client
+	// Read and discard response body to avoid memory leaks
+	// This is important for connection reuse in http.Client
 	_, _ = io.Copy(io.Discard, resp.Body)
 
-	// Проверяем статус код ответа
+	// Check response status code
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		// Если статус успешный (2xx или 3xx), устанавливаем метрику в 1 (эндпоинт работает)
+		// If status is successful (2xx or 3xx), set metric to 1 (endpoint is working)
 		endpointUp.With(labels).Set(1)
 	} else {
-		// Иначе устанавливаем метрику в 0 (эндпоинт не работает)
+		// Otherwise set metric to 0 (endpoint is not working)
 		endpointUp.With(labels).Set(0)
 	}
 
-	// Записываем время ответа
+	// Record response time
 	endpointRespSeconds.With(labels).Set(elapsed)
-
-	// Записываем полученный HTTP статус код
+	// Record received HTTP status code
 	endpointRespCode.With(labels).Set(float64(resp.StatusCode))
 }
 
-// startPolling - запускает фоновый процесс периодического опроса всех эндпоинтов
-// Параметры:
-//   - cfg: указатель на структуру Config с конфигурацией приложения
-func startPolling(cfg *Config) {
-	// Устанавливаем интервал опроса по умолчанию - 15 секунд
+// startPolling - starts background process for periodic polling of all endpoints
+// Parameters:
+// - cfg: pointer to Config structure with application configuration
+// - textfilePath: path to .prom file for node_exporter (if empty - no file writing)
+func startPolling(cfg *Config, textfilePath string) {
+	// Set default poll interval - 15 seconds
 	interval := 15 * time.Second
 
-	// Если в конфигурации задан интервал, пытаемся его распарсить
+	// If interval specified in config, try to parse it
 	if cfg.PollInterval != "" {
-		// Парсим строку интервала (e.g. "30s", "1m", "5m30s")
+		// Parse interval string (e.g. "30s", "1m", "5m30s")
 		d, err := time.ParseDuration(cfg.PollInterval)
 		if err == nil {
-			// Если парсинг успешен, используем загруженный интервал
+			// If parsing successful, use loaded interval
 			interval = d
 		} else {
-			// Если парсинг не удался, логируем ошибку и используем значение по умолчанию
+			// If parsing failed, log error and use default value
 			log.Printf("invalid poll_interval %q, using default %s", cfg.PollInterval, interval)
 		}
 	}
 
-	// ===== Предварительное создание HTTP клиентов =====
-	// Создаем массив HTTP клиентов для каждого эндпоинта
+	// ===== Pre-create HTTP clients =====
+	// Create array of HTTP clients for each endpoint
 	clients := make([]*http.Client, len(cfg.Endpoints))
 
-	// Для каждого эндпоинта создаем настроенный HTTP клиент
+	// Create configured HTTP client for each endpoint
 	for i, endpoint := range cfg.Endpoints {
-		// Строим HTTP клиент для этого эндпоинта
-		config, err := buildHTTPClient(endpoint, *cfg)
+		// Build HTTP client for this endpoint
+		client, err := buildHTTPClient(endpoint, *cfg)
 		if err != nil {
-			// Если создание клиента не удалось, аварийно завершаем приложение
+			// If client creation failed, terminate application fatally
 			log.Fatalf("failed to build http client for endpoint %s: %v", endpoint.Name, err)
 		}
 
-		// Сохраняем созданный клиент в массиве
-		clients[i] = config
+		// Save created client in array
+		clients[i] = client
 	}
 
-	// ===== Запуск горутины для периодического опроса =====
+	// ===== Start goroutine for periodic polling =====
 	go func() {
-		// Создаем ticker для периодического срабатывания
+		// Create ticker for periodic triggering
 		ticker := time.NewTicker(interval)
-
-		// Гарантируем остановку ticker при выходе из функции
+		// Guarantee ticker stop when exiting function
 		defer ticker.Stop()
 
-		// ===== Первый немедленный опрос всех эндпоинтов =====
+		// ===== First immediate poll of all endpoints =====
 		for i := range cfg.Endpoints {
-			// Создаем WaitGroup для синхронизации этого раунда опроса
 			wg := &sync.WaitGroup{}
-
-			// Добавляем одну горутину в WaitGroup
 			wg.Add(1)
-
-			// Запускаем опрос эндпоинта в отдельной горутине
+			// Start endpoint poll in separate goroutine
 			go pollEndpoint(cfg.Endpoints[i], clients[i], wg)
-
-			// Ждем завершения опроса перед переходом к следующему
+			// Wait for poll completion before moving to next
 			wg.Wait()
 		}
 
-		// ===== Периодический опрос по таймеру =====
+		// After first poll, immediately write metrics to .prom (if enabled)
+		if textfilePath != "" {
+			if err := writeMetricsToTextfile(textfilePath); err != nil {
+				log.Printf("failed to write metrics to %s: %v", textfilePath, err)
+			}
+		}
+
+		// ===== Periodic polling by timer =====
 		for range ticker.C {
-			// Создаем WaitGroup для синхронизации всех эндпоинтов в этом раунде
+			// Create WaitGroup for synchronizing all endpoints in this round
 			var wg sync.WaitGroup
 
-			// Для каждого эндпоинта запускаем опрос в отдельной горутине
+			// Start poll for each endpoint in separate goroutine
 			for i := range cfg.Endpoints {
-				// Добавляем горутину в WaitGroup
+				// Add goroutine to WaitGroup
 				wg.Add(1)
-
-				// Запускаем опрос параллельно
+				// Start parallel poll
 				go pollEndpoint(cfg.Endpoints[i], clients[i], &wg)
 			}
 
-			// Ждем завершения всех опросов в этом раунде
+			// Wait for completion of all polls in this round
 			wg.Wait()
+
+			// Update .prom file after each polling cycle
+			if textfilePath != "" {
+				if err := writeMetricsToTextfile(textfilePath); err != nil {
+					log.Printf("failed to write metrics to %s: %v", textfilePath, err)
+				}
+			}
 		}
 	}()
 }
@@ -337,68 +376,66 @@ func startPolling(cfg *Config) {
 // MAIN
 // ============================================
 
-// main - главная функция приложения
-// Инициализирует конфигурацию, запускает опрос эндпоинтов и HTTP сервер для Prometheus
+// main - main application function
+// Initializes configuration, starts endpoint polling and HTTP server for Prometheus
 func main() {
-	// ===== Определение флагов команднной строки =====
+	// ===== Command line flags definition =====
 	var (
-		// configPath - путь до файла конфигурации (по умолчанию "config.yaml")
+		// configPath - path to config file (default "config.yaml")
 		configPath = flag.String("config", "config.yaml", "Path to config YAML")
-
-		// listenAddr - адрес и порт для запуска HTTP сервера (по умолчанию ":9090")
+		// listenAddr - address and port for HTTP server (default ":9090")
 		listenAddr = flag.String("listen", ":9090", "Address to listen on for Prometheus (e.g. 0.0.0.0:9090)")
-
-		// tlsCert - путь до TLS сертификата для /metrics эндпоинта (опционально)
+		// tlsCert - path to TLS certificate for /metrics endpoint (optional)
 		tlsCert = flag.String("cert", "", "TLS certificate file for /metrics (optional)")
-
-		// tlsKey - путь до приватного ключа TLS для /metrics эндпоинта (опционально)
+		// tlsKey - path to TLS private key for /metrics endpoint (optional)
 		tlsKey = flag.String("key", "", "TLS key file for /metrics (optional)")
+		// textfilePath - path to .prom file for node_exporter textfile collector
+		textfilePath = flag.String("path-prom", "", "Path to .prom file for node_exporter (optional)")
 	)
 
-	// ===== Флаг для показа версии =====
+	// ===== Version flag =====
 	flag.Func("version", version, func(s string) error {
-		// Выводим версию и возвращаем nil (флаг обработан)
+		// Print version and return nil (flag processed)
 		return nil
 	})
 
-	// Парсим флаги команднной строки
+	// Parse command line flags
 	flag.Parse()
 
-	// ===== Загрузка конфигурации =====
-	// Загружаем конфигурацию из файла
+	// ===== Configuration loading =====
+	// Load configuration from file
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		// Если загрузка не удалась, выводим ошибку и завершаем приложение
+		// If loading failed, print error and exit application
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	// ===== Запуск периодического опроса эндпоинтов =====
-	startPolling(cfg)
+	// ===== Start periodic endpoint polling =====
+	startPolling(cfg, *textfilePath)
 
-	// ===== Регистрация HTTP обработчиков =====
-	// Регистрируем /metrics обработчик для Prometheus
+	// ===== Register HTTP handlers =====
+	// Register /metrics handler for Prometheus
 	http.Handle("/metrics", promhttp.Handler())
-
-	// Регистрируем корневой / обработчик для вывода справки
+	// Register root / handler for help output
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Exporter: /metrics\n"))
 	})
 
-	// ===== Запуск HTTP сервера =====
-	// Логируем информацию о запуске сервера
+	// ===== Start HTTP server =====
+	// Log server startup information
 	log.Printf("starting exporter on %s (tls: %v)", *listenAddr, *tlsCert != "" && *tlsKey != "")
 
-	// Проверяем, нужно ли запускать HTTPS сервер
+	// Check if HTTPS server is needed
 	if *tlsCert != "" && *tlsKey != "" {
-		// Запускаем HTTPS сервер с TLS
+		// Start HTTPS server with TLS
 		if err := http.ListenAndServeTLS(*listenAddr, *tlsCert, *tlsKey, nil); err != nil {
-			// Если сервер не удалось запустить, выводим ошибку
+			// If server failed to start, print error
 			log.Fatalf("failed to start https server: %v", err)
 		}
 	} else {
-		// Запускаем обычный HTTP сервер без TLS
+		// Start plain HTTP server without TLS
 		if err := http.ListenAndServe(*listenAddr, nil); err != nil {
-			// Если сервер не удалось запустить, выводим ошибку
+			// If server failed to start, print error
 			log.Fatalf("failed to start http server: %v", err)
 		}
 	}
