@@ -20,7 +20,7 @@ import (
 )
 
 // version - variable to store the application version
-var version string = "1.1.0"
+var version string = "1.2.0"
 
 // ============================================
 // DATA STRUCTURES
@@ -49,9 +49,6 @@ type Endpoint struct {
 // PROMETHEUS METRICS
 // ============================================
 
-// endpointUp - Prometheus metric (Gauge) for tracking endpoint status
-// Value 1 = endpoint is up, 0 = endpoint is down
-// Labels: "endpoint" (name) and "url" (address)
 var endpointUp = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "exporter_endpoint_up",
@@ -60,9 +57,6 @@ var endpointUp = prometheus.NewGaugeVec(
 	[]string{"endpoint", "url"},
 )
 
-// endpointRespSeconds - Prometheus metric (Gauge) for tracking endpoint response time
-// Stores response time in seconds (float64)
-// Labels: "endpoint" (name) and "url" (address)
 var endpointRespSeconds = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "exporter_endpoint_response_seconds",
@@ -71,9 +65,6 @@ var endpointRespSeconds = prometheus.NewGaugeVec(
 	[]string{"endpoint", "url"},
 )
 
-// endpointRespCode - Prometheus metric (Gauge) for tracking HTTP response code of endpoint
-// Stores the last received HTTP status code (200, 404, 500, etc.)
-// Labels: "endpoint" (name) and "url" (address)
 var endpointRespCode = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "exporter_endpoint_response_code",
@@ -82,16 +73,23 @@ var endpointRespCode = prometheus.NewGaugeVec(
 	[]string{"endpoint", "url"},
 )
 
+var endpointRespRemainDays = prometheus.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "exporter_endpoint_response_remaindays",
+		Help: "HTTP response remaining days SSL the endpoint",
+	},
+	[]string{"endpoint", "url"},
+)
+
 // ============================================
-// INITIALIZATION
+// INITIALIZATION METRICS
 // ============================================
 
-// init - initialization function, called automatically before main()
-// Registers all Prometheus metrics in the global registry
 func init() {
-	prometheus.MustRegister(endpointUp)          // Register endpoint status metric
-	prometheus.MustRegister(endpointRespSeconds) // Register response time metric
-	prometheus.MustRegister(endpointRespCode)    // Register HTTP response code metric
+	prometheus.MustRegister(endpointUp)
+	prometheus.MustRegister(endpointRespSeconds)
+	prometheus.MustRegister(endpointRespCode)
+	prometheus.MustRegister(endpointRespRemainDays)
 }
 
 // ============================================
@@ -250,15 +248,21 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 
 	// ===== Error handling =====
 	if err != nil {
-		// Log error
 		log.Printf("error fetching %s (%s): %v", endpoint.Name, endpoint.URL, err)
-		// Set metric: endpoint is down (0)
 		endpointUp.With(labels).Set(0)
-		// Record time taken for error
 		endpointRespSeconds.With(labels).Set(elapsed)
-		// Set response code to 0 (no response)
 		endpointRespCode.With(labels).Set(0)
-		return // Exit function
+
+		// We get the number of days remaining
+		if resp != nil && len(resp.TLS.PeerCertificates) > 0 {
+			certInfo := resp.TLS.PeerCertificates[0]
+			daysLeft := time.Until(certInfo.NotAfter).Hours() / 24
+			endpointRespRemainDays.With(labels).Set(daysLeft)
+		} else {
+			endpointRespRemainDays.With(labels).Set(0)
+		}
+
+		return
 	}
 
 	// ===== Successful response handling =====

@@ -1,3 +1,7 @@
 *.prom
 go.mod
 go.sum
+test/
+*.pem
+*.crt
+*.key
