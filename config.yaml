@@ -1,12 +1,18 @@
-poll_interval: "1s"
-client_cert: "client.crt"
-client_key: "client.key"
-ca: ""
+poll_interval: "2s"
+client_cert: "server.crt"
+client_key: "server.key"
+ca: "server.crt"
 
 endpoints:
   - name: "example-http"
     url: "http://127.0.0.1:80"
     TLS_enable: false
+    insecure_skip_verify: false
+    timeout_seconds: 5
+
+  - name: "example-https"
+    url: "https://127.0.0.1:4433"
+    TLS_enable: true
     insecure_skip_verify: false
     timeout_seconds: 5
 

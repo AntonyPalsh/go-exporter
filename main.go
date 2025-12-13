@@ -252,16 +252,7 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 		endpointUp.With(labels).Set(0)
 		endpointRespSeconds.With(labels).Set(elapsed)
 		endpointRespCode.With(labels).Set(0)
-
-		// We get the number of days remaining
-		if resp != nil && len(resp.TLS.PeerCertificates) > 0 {
-			certInfo := resp.TLS.PeerCertificates[0]
-			daysLeft := time.Until(certInfo.NotAfter).Hours() / 24
-			endpointRespRemainDays.With(labels).Set(daysLeft)
-		} else {
-			endpointRespRemainDays.With(labels).Set(0)
-		}
-
+		endpointRespRemainDays.With(labels).Set(0)
 		return
 	}
 
@@ -277,9 +268,19 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		// If status is successful (2xx or 3xx), set metric to 1 (endpoint is working)
 		endpointUp.With(labels).Set(1)
+
+		// We get the number of days remaining
+		if len(resp.TLS.PeerCertificates) > 0 {
+			certInfo := resp.TLS.PeerCertificates[0]
+			now := time.Now().Truncate(24 * time.Hour)
+			expiry := certInfo.NotAfter.Truncate(24 * time.Hour)
+			daysLeft := expiry.Sub(now).Hours() / 24
+			endpointRespRemainDays.With(labels).Set(daysLeft)
+		}
 	} else {
 		// Otherwise set metric to 0 (endpoint is not working)
 		endpointUp.With(labels).Set(0)
+		endpointRespRemainDays.With(labels).Set(0)
 	}
 
 	// Record response time
