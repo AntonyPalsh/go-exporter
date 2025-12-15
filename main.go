@@ -20,7 +20,7 @@ import (
 )
 
 // version - variable to store the application version
-var version string = "1.2.0"
+var version string = "1.2.3"
 
 // ============================================
 // DATA STRUCTURES
@@ -270,7 +270,7 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 		endpointUp.With(labels).Set(1)
 
 		// We get the number of days remaining
-		if len(resp.TLS.PeerCertificates) > 0 {
+		if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 			certInfo := resp.TLS.PeerCertificates[0]
 			now := time.Now().Truncate(24 * time.Hour)
 			expiry := certInfo.NotAfter.Truncate(24 * time.Hour)
