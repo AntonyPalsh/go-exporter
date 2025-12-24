@@ -20,7 +20,7 @@ import (
 )
 
 // version - variable to store the application version
-var version string = "1.2.3"
+var version string = "1.3.0"
 
 // ============================================
 // DATA STRUCTURES
@@ -389,7 +389,7 @@ func main() {
 		// configPath - path to config file (default "config.yaml")
 		configPath = flag.String("config", "config.yaml", "Path to config YAML")
 		// listenAddr - address and port for HTTP server (default ":9090")
-		listenAddr = flag.String("listen", ":9090", "Address to listen on for Prometheus (e.g. 0.0.0.0:9090)")
+		listenAddr = flag.String("listen", "", "Address to listen on for Prometheus (e.g. 0.0.0.0:9090)")
 		// tlsCert - path to TLS certificate for /metrics endpoint (optional)
 		tlsCert = flag.String("cert", "", "TLS certificate file for /metrics (optional)")
 		// tlsKey - path to TLS private key for /metrics endpoint (optional)
@@ -415,9 +415,6 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	// ===== Start periodic endpoint polling =====
-	startPolling(cfg, *textfilePath)
-
 	// ===== Register HTTP handlers =====
 	// Register /metrics handler for Prometheus
 	http.Handle("/metrics", promhttp.Handler())
@@ -428,20 +425,29 @@ func main() {
 
 	// ===== Start HTTP server =====
 	// Log server startup information
-	log.Printf("starting exporter on %s (tls: %v)", *listenAddr, *tlsCert != "" && *tlsKey != "")
+	log.Printf("starting exporter on %s (tls: %v)", *listenAddr != "", *tlsCert != "" && *tlsKey != "")
 
-	// Check if HTTPS server is needed
-	if *tlsCert != "" && *tlsKey != "" {
-		// Start HTTPS server with TLS
-		if err := http.ListenAndServeTLS(*listenAddr, *tlsCert, *tlsKey, nil); err != nil {
-			// If server failed to start, print error
-			log.Fatalf("failed to start https server: %v", err)
+	// Check if Listen server is needed
+	if *listenAddr != "" {
+		// ===== Start periodic endpoint polling =====
+		startPolling(cfg, *textfilePath)
+		// Check if HTTPS server is needed
+		if *tlsCert != "" && *tlsKey != "" {
+			// Start HTTPS server with TLS
+			if err := http.ListenAndServeTLS(*listenAddr, *tlsCert, *tlsKey, nil); err != nil {
+				// If server failed to start, print error
+				log.Fatalf("failed to start https server: %v", err)
+			}
+		} else {
+			// Start plain HTTP server without TLS
+			if err := http.ListenAndServe(*listenAddr, nil); err != nil {
+				// If server failed to start, print error
+				log.Fatalf("failed to start http server: %v", err)
+			}
 		}
 	} else {
-		// Start plain HTTP server without TLS
-		if err := http.ListenAndServe(*listenAddr, nil); err != nil {
-			// If server failed to start, print error
-			log.Fatalf("failed to start http server: %v", err)
-		}
+		// ===== Start periodic endpoint polling =====
+		startPolling(cfg, *textfilePath)
+		select {}
 	}
 }
