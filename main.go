@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -95,6 +96,82 @@ func init() {
 // ============================================
 // FUNCTIONS
 // ============================================
+
+// getPostgresCertDaysHandshake подключается к PostgreSQL, выполняет только TLS handshake
+// и возвращает количество полных дней до истечения сертификата сервера.
+// Параметры:
+//   - host: адрес сервера (например, "localhost")
+//   - port: порт (обычно 5432)
+//   - timeout: таймаут на всю операцию
+//
+// Возвращает:
+//   - daysLeft: количество дней (0, если сертификат истёк или не удалось получить)
+//   - err: ошибка, если соединение или handshake не удались
+func getPostgresCertDaysHandshake(host string, port int, timeout time.Duration) (float64, error) {
+	// 1. TCP соединение с таймаутом
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), timeout)
+	if err != nil {
+		return 0, fmt.Errorf("TCP dial failed: %w", err)
+	}
+	defer conn.Close()
+
+	// Устанавливаем общий таймаут на все операции чтения/записи
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return 0, fmt.Errorf("set deadline failed: %w", err)
+	}
+
+	// 2. Отправляем SSLRequest (длина 8 + магическое число)
+	sslRequest := []byte{
+		0, 0, 0, 8, // длина пакета (network byte order)
+		0x04, 0xd2, 0x16, 0x2f, // SSLRequest code = 80877103
+	}
+	if _, err := conn.Write(sslRequest); err != nil {
+		return 0, fmt.Errorf("send SSLRequest failed: %w", err)
+	}
+
+	// 3. Читаем ответ сервера (1 байт)
+	resp := make([]byte, 1)
+	if _, err := conn.Read(resp); err != nil {
+		return 0, fmt.Errorf("read SSL response failed: %w", err)
+	}
+	if resp[0] != 'S' {
+		// Сервер ответил 'N' или что-то иное — SSL не поддерживается
+		return 0, fmt.Errorf("server does not support SSL (response: %q)", resp[0])
+	}
+
+	// 4. Создаём TLS-соединение поверх TCP
+	//    InsecureSkipVerify = true, потому что нас не интересует проверка подлинности,
+	//    мы просто хотим получить сертификат.
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+	}
+	tlsConn := tls.Client(conn, tlsConfig)
+	defer tlsConn.Close()
+
+	// 5. Выполняем handshake вручную (можно также использовать tlsConn.Handshake())
+	if err := tlsConn.Handshake(); err != nil {
+		return 0, fmt.Errorf("TLS handshake failed: %w", err)
+	}
+
+	// 6. Получаем состояние соединения и сертификаты
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return 0, fmt.Errorf("no peer certificates received")
+	}
+
+	// Берём первый сертификат в цепочке (сертификат сервера)
+	cert := state.PeerCertificates[0]
+
+	// 7. Вычисляем оставшиеся дни (полные дни, отсекая время)
+	now := time.Now().Truncate(24 * time.Hour)
+	expiry := cert.NotAfter.Truncate(24 * time.Hour)
+	daysLeft := expiry.Sub(now).Hours() / 24
+	if daysLeft < 0 {
+		daysLeft = 0
+	}
+
+	return daysLeft, nil
+}
 
 // writeMetricsToTextfile serializes all metrics from the registry to Prometheus text format
 // and atomically writes them to the specified file (for node_exporter textfile collector)
@@ -398,7 +475,7 @@ func main() {
 		textfilePath = flag.String("path-prom", "", "Path to .prom file for node_exporter (optional)")
 	)
 
-	// ===== Version flag =====
+	// ===== Version flag =====c
 	flag.Func("version", version, func(s string) error {
 		// Print version and return nil (flag processed)
 		return nil

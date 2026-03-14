@@ -23,3 +23,5 @@ Create a config.yaml (example at bottom of file)
 
 Note: this file is intentionally self-contained and small; adapt error handling
 and features (auth, retries, concurrency limits) as needed for production.
+
+openssl req -x509 -newkey rsa:2048 -nodes -keyout server.key -out server.crt -days 365 -subj "/C=RU/ST=Moscow/L=Moscow/O=MyOrg/CN=localhost"
