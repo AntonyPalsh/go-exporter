@@ -10,6 +10,10 @@ endpoints:
     insecure_skip_verify: false
     timeout_seconds: 5
 
+  - name: "postgres"
+    url: "postgres://localhost:5432"
+    timeout_seconds: 5
+
   # - name: "example-https"
   #   url: "https://127.0.0.1:4433"
   #   TLS_enable: true
