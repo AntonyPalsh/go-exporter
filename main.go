@@ -46,6 +46,8 @@ type Endpoint struct {
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // Flag to skip SSL certificate verification (insecure)
 	TlsEnable          bool   `yaml:"TLS_enable"`           // Flag to enable/disable TLS
 	TimeoutSeconds     int    `yaml:"timeout_seconds"`      // HTTP request timeout in seconds
+	ClientCert         string `yaml:"client_cert"`          // Path to client certificate for mTLS
+	ClientKey          string `yaml:"client_key"`           // Path to client private key for mTLS
 }
 
 // ============================================
@@ -177,7 +179,7 @@ func getPostgresCertDaysHandshake(host string, port int, timeout time.Duration) 
 
 // parsePostgresURL извлекает хост и порт из PostgreSQL URL.
 // Если порт не указан, возвращается 5432.
-func parsePostgresURL(rawURL string) (host string, port int, err error) { // <-- NEW
+func parsePostgresURL(rawURL string) (host string, port int, err error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", 0, fmt.Errorf("invalid URL: %w", err)
@@ -263,6 +265,24 @@ func loadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
+// getEffectiveClientCertAndKey возвращает фактический путь к клиентскому сертификату и ключу.
+// Приоритет отдаётся полям Endpoint, если они не пустые. В противном случае используются поля из Config.
+func checkCertAndKey(cfg Config, ep Endpoint) (clientCert string, clientKey string) {
+	if ep.ClientCert != "" {
+		clientCert = ep.ClientCert
+	} else {
+		clientCert = cfg.ClientCert
+	}
+
+	if ep.ClientKey != "" {
+		clientKey = ep.ClientKey
+	} else {
+		clientKey = cfg.ClientKey
+	}
+
+	return
+}
+
 // buildHTTPClient - creates and configures HTTP client for specific endpoint
 // Parameters:
 // - endpoint: Endpoint structure with specific endpoint parameters
@@ -272,10 +292,10 @@ func loadConfig(path string) (*Config, error) {
 // - pointer to ready-to-use http.Client
 // - error (if failed to load certificates or keys)
 func buildHTTPClient(endpoint Endpoint, config Config) (*http.Client, error) {
-	// Если это PostgreSQL endpoint, HTTP-клиент не нужен // <-- NEW
-	if isPostgresURL(endpoint.URL) { // <-- NEW
-		return nil, nil // <-- NEW
-	} // <-- NEW
+	// Если это PostgreSQL endpoint, HTTP-клиент не нужен
+	if isPostgresURL(endpoint.URL) {
+		return nil, nil
+	}
 
 	// Create new TLS configuration (initially empty)
 	tlsConfig := &tls.Config{}
@@ -302,7 +322,7 @@ func buildHTTPClient(endpoint Endpoint, config Config) (*http.Client, error) {
 	// ===== Client certificate setup (mTLS) =====
 	if endpoint.TlsEnable {
 		// Load client certificate+key pair
-		cert, err := tls.LoadX509KeyPair(config.ClientCert, config.ClientKey)
+		cert, err := tls.LoadX509KeyPair(checkCertAndKey(config, endpoint))
 		if err != nil {
 			return nil, fmt.Errorf("loading client cert/key: %w", err)
 		}
@@ -335,14 +355,14 @@ func buildHTTPClient(endpoint Endpoint, config Config) (*http.Client, error) {
 	return client, nil
 }
 
-// Вспомогательная функция для определения PostgreSQL URL // <-- NEW
-func isPostgresURL(raw string) bool { // <-- NEW
-	u, err := url.Parse(raw) // <-- NEW
-	if err != nil {          // <-- NEW
-		return false // <-- NEW
-	} // <-- NEW
-	return u.Scheme == "postgres" || u.Scheme == "postgresql" // <-- NEW
-} // <-- NEW
+// Вспомогательная функция для определения PostgreSQL URL
+func isPostgresURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "postgres" || u.Scheme == "postgresql"
+}
 
 // pollEndpoint - polls a single endpoint and updates metrics
 // Parameters:
@@ -359,11 +379,11 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 	// Create labels for this endpoint (used for all metrics)
 	labels := prometheus.Labels{"endpoint": endpoint.Name, "url": endpoint.URL}
 
-	// Определяем тип endpoint по URL // <-- NEW
-	if isPostgresURL(endpoint.URL) { // <-- NEW
-		pollPostgresEndpoint(endpoint, start, labels) // <-- NEW
-		return                                        // <-- NEW
-	} // <-- NEW
+	// Определяем тип endpoint по URL
+	if isPostgresURL(endpoint.URL) {
+		pollPostgresEndpoint(endpoint, start, labels)
+		return
+	}
 
 	// Make GET request to endpoint
 	resp, err := client.Get(endpoint.URL)
@@ -414,44 +434,44 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 	endpointRespCode.With(labels).Set(float64(resp.StatusCode))
 }
 
-// pollPostgresEndpoint выполняет мониторинг PostgreSQL через TLS handshake // <-- NEW
-func pollPostgresEndpoint(endpoint Endpoint, start time.Time, labels prometheus.Labels) { // <-- NEW
-	host, port, err := parsePostgresURL(endpoint.URL) // <-- NEW
-	if err != nil {                                   // <-- NEW
-		log.Printf("invalid postgres URL %s: %v", endpoint.URL, err)      // <-- NEW
-		endpointUp.With(labels).Set(0)                                    // <-- NEW
-		endpointRespSeconds.With(labels).Set(time.Since(start).Seconds()) // <-- NEW
-		endpointRespCode.With(labels).Set(0)                              // <-- NEW
-		endpointRespRemainDays.With(labels).Set(0)                        // <-- NEW
-		return                                                            // <-- NEW
-	} // <-- NEW
+// pollPostgresEndpoint выполняет мониторинг PostgreSQL через TLS handshake
+func pollPostgresEndpoint(endpoint Endpoint, start time.Time, labels prometheus.Labels) {
+	host, port, err := parsePostgresURL(endpoint.URL)
+	if err != nil {
+		log.Printf("invalid postgres URL %s: %v", endpoint.URL, err)
+		endpointUp.With(labels).Set(0)
+		endpointRespSeconds.With(labels).Set(time.Since(start).Seconds())
+		endpointRespCode.With(labels).Set(0)
+		endpointRespRemainDays.With(labels).Set(0)
+		return
+	}
 
-	// Определяем таймаут // <-- NEW
-	timeout := 10 * time.Second      // <-- NEW
-	if endpoint.TimeoutSeconds > 0 { // <-- NEW
-		timeout = time.Duration(endpoint.TimeoutSeconds) * time.Second // <-- NEW
-	} // <-- NEW
+	// Определяем таймаут
+	timeout := 10 * time.Second
+	if endpoint.TimeoutSeconds > 0 {
+		timeout = time.Duration(endpoint.TimeoutSeconds) * time.Second
+	}
 
-	// Выполняем handshake // <-- NEW
-	daysLeft, err := getPostgresCertDaysHandshake(host, port, timeout) // <-- NEW
-	elapsed := time.Since(start).Seconds()                             // <-- NEW
+	// Выполняем handshake
+	daysLeft, err := getPostgresCertDaysHandshake(host, port, timeout)
+	elapsed := time.Since(start).Seconds()
 
-	if err != nil { // <-- NEW
-		log.Printf("postgres handshake failed for %s (%s): %v", endpoint.Name, endpoint.URL, err) // <-- NEW
-		endpointUp.With(labels).Set(0)                                                            // <-- NEW
-		endpointRespSeconds.With(labels).Set(elapsed)                                             // <-- NEW
-		endpointRespCode.With(labels).Set(0)                                                      // <-- NEW
-		endpointRespRemainDays.With(labels).Set(0)                                                // <-- NEW
-		return                                                                                    // <-- NEW
-	} // <-- NEW
+	if err != nil {
+		log.Printf("postgres handshake failed for %s (%s): %v", endpoint.Name, endpoint.URL, err)
+		endpointUp.With(labels).Set(0)
+		endpointRespSeconds.With(labels).Set(elapsed)
+		endpointRespCode.With(labels).Set(0)
+		endpointRespRemainDays.With(labels).Set(0)
+		return
+	}
 
-	// Успех // <-- NEW
-	log.Printf("postgres handshake succeeded for %s (%s), days left: %.0f", endpoint.Name, endpoint.URL, daysLeft) // <-- NEW
-	endpointUp.With(labels).Set(1)                                                                                 // <-- NEW
-	endpointRespSeconds.With(labels).Set(elapsed)                                                                  // <-- NEW
-	endpointRespCode.With(labels).Set(200)                                                                         // <-- NEW
-	endpointRespRemainDays.With(labels).Set(daysLeft)                                                              // <-- NEW
-} // <-- NEW
+	// Успех
+	// log.Printf("postgres handshake succeeded for %s (%s), days left: %.0f", endpoint.Name, endpoint.URL, daysLeft)
+	endpointUp.With(labels).Set(1)
+	endpointRespSeconds.With(labels).Set(elapsed)
+	endpointRespCode.With(labels).Set(200)
+	endpointRespRemainDays.With(labels).Set(daysLeft)
+}
 
 // startPolling - starts background process for periodic polling of all endpoints
 // Parameters:
@@ -486,7 +506,7 @@ func startPolling(cfg *Config, textfilePath string) {
 			// If client creation failed, terminate application fatally
 			log.Fatalf("failed to build http client for endpoint %s: %v", endpoint.Name, err)
 		}
-		// Для PostgreSQL client будет nil, это нормально // <-- NEW
+		// Для PostgreSQL client будет nil, это нормально
 		clients[i] = client
 	}
 

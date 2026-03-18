@@ -4,6 +4,8 @@ go mod init exporter
 go mod tidy
 go build -o exporter
 
+CGO_ENABLED=0 go build -o exporter main.go
+
 
 Simple Prometheus exporter in Go supporting TLS for the metrics endpoint
 and both TLS and plain HTTP when calling upstream endpoints.
