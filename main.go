@@ -280,6 +280,9 @@ func checkCertAndKey(cfg Config, ep Endpoint) (clientCert string, clientKey stri
 		clientKey = cfg.ClientKey
 	}
 
+	fmt.Printf("cert: %s for: %s", clientCert, ep.Name)
+	fmt.Printf("key: %s for: %s", clientKey, ep.Name)
+
 	return
 }
 
