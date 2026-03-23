@@ -121,7 +121,7 @@ func getPostgresCertDaysHandshake(host string, port int, timeout time.Duration) 
 
 	// Устанавливаем общий таймаут на все операции чтения/записи
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return 0, fmt.Errorf("set deadline failed: %w", err)
+		return 0, fmt.Errorf("❌ set deadline failed: %w", err)
 	}
 
 	// 2. Отправляем SSLRequest (длина 8 + магическое число)
@@ -130,17 +130,17 @@ func getPostgresCertDaysHandshake(host string, port int, timeout time.Duration) 
 		0x04, 0xd2, 0x16, 0x2f, // SSLRequest code = 80877103
 	}
 	if _, err := conn.Write(sslRequest); err != nil {
-		return 0, fmt.Errorf("send SSLRequest failed: %w", err)
+		return 0, fmt.Errorf("❌ send SSLRequest failed: %w", err)
 	}
 
 	// 3. Читаем ответ сервера (1 байт)
 	resp := make([]byte, 1)
 	if _, err := conn.Read(resp); err != nil {
-		return 0, fmt.Errorf("read SSL response failed: %w", err)
+		return 0, fmt.Errorf("❌ read SSL response failed: %w", err)
 	}
 	if resp[0] != 'S' {
 		// Сервер ответил 'N' или что-то иное — SSL не поддерживается
-		return 0, fmt.Errorf("server does not support SSL (response: %q)", resp[0])
+		return 0, fmt.Errorf("❌ server does not support SSL (response: %q)", resp[0])
 	}
 
 	// 4. Создаём TLS-соединение поверх TCP
@@ -154,13 +154,13 @@ func getPostgresCertDaysHandshake(host string, port int, timeout time.Duration) 
 
 	// 5. Выполняем handshake вручную (можно также использовать tlsConn.Handshake())
 	if err := tlsConn.Handshake(); err != nil {
-		return 0, fmt.Errorf("TLS handshake failed: %w", err)
+		return 0, fmt.Errorf("❌ TLS handshake failed: %w", err)
 	}
 
 	// 6. Получаем состояние соединения и сертификаты
 	state := tlsConn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
-		return 0, fmt.Errorf("no peer certificates received")
+		return 0, fmt.Errorf("❌ no peer certificates received")
 	}
 
 	// Берём первый сертификат в цепочке (сертификат сервера)
@@ -185,11 +185,11 @@ func parsePostgresURL(rawURL string) (host string, port int, err error) {
 		return "", 0, fmt.Errorf("invalid URL: %w", err)
 	}
 	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
-		return "", 0, fmt.Errorf("unsupported scheme: %s", u.Scheme)
+		return "", 0, fmt.Errorf("❌ unsupported scheme: %s", u.Scheme)
 	}
 	host = u.Hostname()
 	if host == "" {
-		return "", 0, fmt.Errorf("missing host")
+		return "", 0, fmt.Errorf("❌ missing host")
 	}
 	portStr := u.Port()
 	if portStr == "" {
@@ -197,7 +197,7 @@ func parsePostgresURL(rawURL string) (host string, port int, err error) {
 	} else {
 		port, err = strconv.Atoi(portStr)
 		if err != nil {
-			return "", 0, fmt.Errorf("invalid port: %w", err)
+			return "", 0, fmt.Errorf("❌ invalid port: %w", err)
 		}
 	}
 	return host, port, nil
@@ -213,7 +213,7 @@ func writeMetricsToTextfile(path string) error {
 	// Gather all metrics from the default registry
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
-		return fmt.Errorf("gather metrics: %w", err)
+		return fmt.Errorf("❌ gather metrics: %w", err)
 	}
 
 	var buf bytes.Buffer
@@ -222,18 +222,18 @@ func writeMetricsToTextfile(path string) error {
 	// Encode each metric to text format
 	for _, mf := range mfs {
 		if err := enc.Encode(mf); err != nil {
-			return fmt.Errorf("encode metric: %w", err)
+			return fmt.Errorf("❌ encode metric: %w", err)
 		}
 	}
 
 	// Atomic write: first to temporary file, then rename
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("write tmp file: %w", err)
+		return fmt.Errorf("❌ write tmp file: %w", err)
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename tmp file: %w", err)
+		return fmt.Errorf("❌ rename tmp file: %w", err)
 	}
 
 	return nil
@@ -280,8 +280,8 @@ func checkCertAndKey(cfg Config, ep Endpoint) (clientCert string, clientKey stri
 		clientKey = cfg.ClientKey
 	}
 
-	fmt.Printf("cert: %s for: %s", clientCert, ep.Name)
-	fmt.Printf("key: %s for: %s", clientKey, ep.Name)
+	log.Printf("✅ Подгружаем cert: %s для Endpoint: %s", clientCert, ep.Name)
+	log.Printf("✅ Подгружаем key: %s для Endpoint: %s", clientKey, ep.Name)
 
 	return
 }
@@ -308,14 +308,14 @@ func buildHTTPClient(endpoint Endpoint, config Config) (*http.Client, error) {
 		// Read CA certificate from file
 		caBytes, err := os.ReadFile(config.CA)
 		if err != nil {
-			return nil, fmt.Errorf("reading CA file: %w", err)
+			return nil, fmt.Errorf("❌ reading CA file: %w", err)
 		}
 
 		// Create new certificate pool
 		pool := x509.NewCertPool()
 		// Add CA certificate to pool
 		if !pool.AppendCertsFromPEM(caBytes) {
-			return nil, fmt.Errorf("failed to append CA certs from %s", config.CA)
+			return nil, fmt.Errorf("❌ failed to append CA certs from %s", config.CA)
 		}
 
 		// Set pool as root for server certificate verification
@@ -327,7 +327,7 @@ func buildHTTPClient(endpoint Endpoint, config Config) (*http.Client, error) {
 		// Load client certificate+key pair
 		cert, err := tls.LoadX509KeyPair(checkCertAndKey(config, endpoint))
 		if err != nil {
-			return nil, fmt.Errorf("loading client cert/key: %w", err)
+			return nil, fmt.Errorf("❌ loading client cert/key: %w", err)
 		}
 
 		// Add client certificate to TLS configuration
@@ -396,7 +396,7 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 
 	// ===== Error handling =====
 	if err != nil {
-		log.Printf("error fetching %s (%s): %v", endpoint.Name, endpoint.URL, err)
+		log.Printf("❌ error fetching %s (%s): %v", endpoint.Name, endpoint.URL, err)
 		endpointUp.With(labels).Set(0)
 		endpointRespSeconds.With(labels).Set(elapsed)
 		endpointRespCode.With(labels).Set(0)
@@ -441,7 +441,7 @@ func pollEndpoint(endpoint Endpoint, client *http.Client, wg *sync.WaitGroup) {
 func pollPostgresEndpoint(endpoint Endpoint, start time.Time, labels prometheus.Labels) {
 	host, port, err := parsePostgresURL(endpoint.URL)
 	if err != nil {
-		log.Printf("invalid postgres URL %s: %v", endpoint.URL, err)
+		log.Printf("❌ invalid postgres URL %s: %v", endpoint.URL, err)
 		endpointUp.With(labels).Set(0)
 		endpointRespSeconds.With(labels).Set(time.Since(start).Seconds())
 		endpointRespCode.With(labels).Set(0)
@@ -460,7 +460,7 @@ func pollPostgresEndpoint(endpoint Endpoint, start time.Time, labels prometheus.
 	elapsed := time.Since(start).Seconds()
 
 	if err != nil {
-		log.Printf("postgres handshake failed for %s (%s): %v", endpoint.Name, endpoint.URL, err)
+		log.Printf("❌ postgres handshake failed for %s (%s): %v", endpoint.Name, endpoint.URL, err)
 		endpointUp.With(labels).Set(0)
 		endpointRespSeconds.With(labels).Set(elapsed)
 		endpointRespCode.With(labels).Set(0)
@@ -493,7 +493,7 @@ func startPolling(cfg *Config, textfilePath string) {
 			interval = d
 		} else {
 			// If parsing failed, log error and use default value
-			log.Printf("invalid poll_interval %q, using default %s", cfg.PollInterval, interval)
+			log.Printf("❌ invalid poll_interval %q, using default %s", cfg.PollInterval, interval)
 		}
 	}
 
@@ -507,7 +507,7 @@ func startPolling(cfg *Config, textfilePath string) {
 		client, err := buildHTTPClient(endpoint, *cfg)
 		if err != nil {
 			// If client creation failed, terminate application fatally
-			log.Fatalf("failed to build http client for endpoint %s: %v", endpoint.Name, err)
+			log.Fatalf("❌ failed to build http client for endpoint %s: %v", endpoint.Name, err)
 		}
 		// Для PostgreSQL client будет nil, это нормально
 		clients[i] = client
@@ -533,7 +533,7 @@ func startPolling(cfg *Config, textfilePath string) {
 		// After first poll, immediately write metrics to .prom (if enabled)
 		if textfilePath != "" {
 			if err := writeMetricsToTextfile(textfilePath); err != nil {
-				log.Printf("failed to write metrics to %s: %v", textfilePath, err)
+				log.Printf("❌ failed to write metrics to %s: %v", textfilePath, err)
 			}
 		}
 
@@ -556,7 +556,7 @@ func startPolling(cfg *Config, textfilePath string) {
 			// Update .prom file after each polling cycle
 			if textfilePath != "" {
 				if err := writeMetricsToTextfile(textfilePath); err != nil {
-					log.Printf("failed to write metrics to %s: %v", textfilePath, err)
+					log.Printf("❌ failed to write metrics to %s: %v", textfilePath, err)
 				}
 			}
 		}
@@ -598,7 +598,7 @@ func main() {
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		// If loading failed, print error and exit application
-		log.Fatalf("failed to load config: %v", err)
+		log.Fatalf("❌ failed to load config: %v", err)
 	}
 
 	// ===== Register HTTP handlers =====
@@ -611,8 +611,11 @@ func main() {
 
 	// ===== Start HTTP server =====
 	// Log server startup information
-	log.Printf("starting exporter on %s (tls: %v)", *listenAddr != "", *tlsCert != "" && *tlsKey != "")
-
+	if *listenAddr != "" {
+		log.Printf("🚀 starting exporter on %s (tls: %v)", *listenAddr, *tlsCert != "" && *tlsKey != "")
+	} else {
+		log.Printf("🚀 starting exporter")
+	}
 	// Check if Listen server is needed
 	if *listenAddr != "" {
 		// ===== Start periodic endpoint polling =====
@@ -622,13 +625,13 @@ func main() {
 			// Start HTTPS server with TLS
 			if err := http.ListenAndServeTLS(*listenAddr, *tlsCert, *tlsKey, nil); err != nil {
 				// If server failed to start, print error
-				log.Fatalf("failed to start https server: %v", err)
+				log.Fatalf("❌ failed to start https server: %v", err)
 			}
 		} else {
 			// Start plain HTTP server without TLS
 			if err := http.ListenAndServe(*listenAddr, nil); err != nil {
 				// If server failed to start, print error
-				log.Fatalf("failed to start http server: %v", err)
+				log.Fatalf("❌ failed to start http server: %v", err)
 			}
 		}
 	} else {

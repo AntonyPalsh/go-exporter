@@ -14,11 +14,13 @@ endpoints:
     url: "postgres://localhost:5432"
     timeout_seconds: 5
 
-  # - name: "example-https"
-  #   url: "https://127.0.0.1:4433"
-  #   TLS_enable: true
-  #   insecure_skip_verify: false
-  #   timeout_seconds: 5
+  - name: "example-https"
+    url: "https://127.0.0.1:443"
+    TLS_enable: true
+    insecure_skip_verify: false
+    timeout_seconds: 5
+    client_cert: "server2.crt"
+    client_key: "server2.key"  
 
   # - name: "example-https-insecure"
   #   url: "http://self-signed.example.local/health"
